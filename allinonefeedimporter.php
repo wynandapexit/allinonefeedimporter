@@ -2,7 +2,7 @@
 /**
  * Plugin Name: All In One Feed Importer
  * Description: Import WooCommerce products from CSV, Excel, XML, and JSON files or remote supplier feeds, with field mapping and schedules.
- * Version: 1.1.5
+ * Version: 1.1.6
  * Requires at least: 6.2
  * Requires PHP: 7.4
  * Requires Plugins: woocommerce
@@ -11,7 +11,7 @@
  * License: GPL-2.0-or-later
  */
 if (!defined('ABSPATH')) { exit; }
-define('A1FI_VERSION', '1.1.5');
+define('A1FI_VERSION', '1.1.6');
 define('A1FI_FILE', __FILE__);
 define('A1FI_DIR', plugin_dir_path(__FILE__));
 if (file_exists(A1FI_DIR . 'vendor/autoload.php')) require_once A1FI_DIR . 'vendor/autoload.php';

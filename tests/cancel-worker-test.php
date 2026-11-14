@@ -33,5 +33,5 @@ $GLOBALS['saves'] = 0;
 $method = new ReflectionMethod(A1FI_Queue::class, 'process_batch');
 $method->setAccessible(true);
 $method->invoke(null);
-if ($GLOBALS['saves'] !== 2) throw new RuntimeException('Worker continued to the next row after cancellation');
+if ($GLOBALS['saves'] !== 1) throw new RuntimeException('Worker continued to the next row after cancellation');
 echo "Worker cancellation checks passed.\n";

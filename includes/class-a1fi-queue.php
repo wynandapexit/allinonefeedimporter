@@ -254,13 +254,17 @@ class A1FI_Queue {
                 continue;
             }
             $wpdb->update($rows_table, ['status' => 'completed'], ['id' => (int) $queued_row->id], ['%s'], ['%d']);
-            $counter = $outcome['updated'] ? 'updated_count' : 'created_count';
+            $counter = [
+                'created' => 'created_count',
+                'updated' => 'updated_count',
+                'skipped' => 'skipped_count',
+            ][$outcome['outcome']];
             $wpdb->query($wpdb->prepare("UPDATE $jobs SET processed_rows=processed_rows+1,`$counter`=`$counter`+1 WHERE id=%d", (int) $job->id));
         }
         $wpdb->update($jobs, ['errors' => $errors ? wp_json_encode($errors) : null, 'updated_at' => current_time('mysql')], ['id' => (int) $job->id], ['%s','%s'], ['%d']);
         $current = $wpdb->get_row($wpdb->prepare("SELECT * FROM $jobs WHERE id=%d", (int) $job->id));
         if ($current && (int) $current->processed_rows >= (int) $current->total_rows) {
-            self::finish_job($current, (int) $current->failed_count ? 'completed' : 'completed', sprintf(__('%1$d imported or updated; %2$d failed.', 'allinonefeedimporter'), (int) $current->created_count, (int) $current->failed_count));
+            self::finish_job($current, 'completed', sprintf(__('Created %1$d, updated %2$d, skipped %3$d, failed %4$d.', 'allinonefeedimporter'), (int) $current->created_count, (int) $current->updated_count, (int) $current->skipped_count, (int) $current->failed_count));
         } else {
             wp_schedule_single_event(time() + 5, 'a1fi_process_queue');
         }
@@ -275,23 +279,38 @@ class A1FI_Queue {
         if ($name === '') return new WP_Error('a1fi_queue_name', __('Missing product name.', 'allinonefeedimporter'));
         $sku = trim((string) ($values['sku'] ?? ''));
         $product_id = $sku !== '' ? wc_get_product_id_by_sku($sku) : 0;
-        $updated = (bool) $product_id;
         $product = $product_id ? wc_get_product($product_id) : new WC_Product_Simple();
-        if (!$product) $product = new WC_Product_Simple();
+        if (!$product) return new WP_Error('a1fi_queue_product', __('The matching product could not be loaded.', 'allinonefeedimporter'));
         try {
-            $product->set_name($name);
-            if ($sku !== '') $product->set_sku($sku);
-            foreach (['description' => 'set_description', 'short_description' => 'set_short_description'] as $field => $method) {
-                if (isset($values[$field])) $product->$method(wp_kses_post((string) $values[$field]));
+            $created = !$product_id;
+            $changed = $created;
+            if ($created) {
+                $product->set_name($name);
+                if ($sku !== '') $product->set_sku($sku);
+                foreach (['description' => 'set_description', 'short_description' => 'set_short_description'] as $field => $method) {
+                    if (isset($values[$field])) $product->$method(wp_kses_post((string) $values[$field]));
+                }
+                $status = strtolower((string) ($values['status'] ?? 'publish'));
+                $product->set_status(in_array($status, ['publish','draft','pending','private'], true) ? $status : 'publish');
             }
             foreach (['regular_price' => 'set_regular_price', 'sale_price' => 'set_sale_price'] as $field => $method) {
-                if (isset($values[$field]) && is_numeric($values[$field])) $product->$method((string) $values[$field]);
+                if (!isset($values[$field]) || !is_numeric($values[$field])) continue;
+                $getter = 'get_' . $field;
+                $current = $product->$getter('edit');
+                if ($created || $current === '' || (float) $current !== (float) $values[$field]) {
+                    $product->$method((string) $values[$field]);
+                    $changed = true;
+                }
             }
-            $status = strtolower((string) ($values['status'] ?? 'publish'));
-            $product->set_status(in_array($status, ['publish','draft','pending','private'], true) ? $status : 'publish');
-            $id = $product->save();
-            if (!$id) return new WP_Error('a1fi_queue_save', __('WooCommerce could not save product.', 'allinonefeedimporter'));
-            if (!empty($values['categories'])) {
+            if (isset($values['stock_quantity']) && is_numeric($values['stock_quantity'])) {
+                $quantity = (int) $values['stock_quantity'];
+                if ($created || !$product->get_manage_stock('edit') || $product->get_stock_quantity('edit') === null || (int) $product->get_stock_quantity('edit') !== $quantity) {
+                    $product->set_manage_stock(true);
+                    $product->set_stock_quantity($quantity);
+                    $changed = true;
+                }
+            }
+            if ($created && !empty($values['categories'])) {
                 $term_ids = [];
                 foreach (explode(',', (string) $values['categories']) as $category) {
                     $category = trim($category);
@@ -302,18 +321,72 @@ class A1FI_Queue {
                 }
                 if ($term_ids) $product->set_category_ids(array_values(array_unique($term_ids)));
             }
-            if (isset($values['stock_quantity']) && is_numeric($values['stock_quantity'])) {
-                $product->set_manage_stock(true);
-                $product->set_stock_quantity((int) $values['stock_quantity']);
+            if ($created) {
+                $product_id = $product->save();
+                if (!$product_id) return new WP_Error('a1fi_queue_save', __('WooCommerce could not save product.', 'allinonefeedimporter'));
             }
-            $product->save();
+            $images_changed = false;
             if (!empty($values['images'])) {
-                A1FI_Plugin::set_images((int) $id, (string) $values['images']);
+                $images_changed = self::sync_images($product, (int) $product_id, (string) $values['images']);
+                if (is_wp_error($images_changed)) return $images_changed;
+                $changed = $changed || $images_changed;
             }
-            return ['id' => (int) $id, 'updated' => $updated];
+            if ((!$created && $changed) || ($created && $images_changed)) {
+                if (!$product->save()) return new WP_Error('a1fi_queue_save', __('WooCommerce could not save product.', 'allinonefeedimporter'));
+            }
+            return ['id' => (int) $product_id, 'outcome' => $created ? 'created' : ($changed ? 'updated' : 'skipped')];
         } catch (Throwable $error) {
             return new WP_Error('a1fi_queue_product', __('Product could not be imported; check the feed values and WooCommerce logs.', 'allinonefeedimporter'));
         }
+    }
+
+    private static function sync_images($product, $product_id, $value) {
+        $urls = array_slice(array_map('trim', explode(',', $value)), 0, 10);
+        $urls = array_values(array_filter($urls, static function ($url) { return $url !== ''; }));
+        if (!$urls) return false;
+        $existing_ids = array_values(array_filter(array_map('intval', array_merge([(int) $product->get_image_id('edit')], $product->get_gallery_image_ids('edit')))));
+        $by_url = [];
+        foreach ($existing_ids as $id) {
+            if (!wp_attachment_is_image($id)) continue;
+            $source = get_post_meta($id, '_source_url', true);
+            if ($source !== '') $by_url[$source] = $id;
+        }
+        $searched = false;
+        $ids = [];
+        foreach ($urls as $url) {
+            if (!wp_http_validate_url($url)) return new WP_Error('a1fi_queue_image_url', __('A mapped image URL is invalid.', 'allinonefeedimporter'));
+            $url = esc_url_raw($url);
+            if (!isset($by_url[$url]) && !$searched) {
+                $searched = true;
+                $attachments = get_posts([
+                    'post_type' => 'attachment',
+                    'post_status' => 'inherit',
+                    'post_parent' => $product_id,
+                    'post_mime_type' => 'image',
+                    'fields' => 'ids',
+                    'posts_per_page' => -1,
+                    'no_found_rows' => true,
+                ]);
+                foreach ($attachments as $id) {
+                    if (!wp_attachment_is_image($id)) continue;
+                    $source = get_post_meta($id, '_source_url', true);
+                    if ($source !== '' && !isset($by_url[$source])) $by_url[$source] = (int) $id;
+                }
+            }
+            if (!isset($by_url[$url])) {
+                require_once ABSPATH . 'wp-admin/includes/file.php';
+                require_once ABSPATH . 'wp-admin/includes/media.php';
+                require_once ABSPATH . 'wp-admin/includes/image.php';
+                $id = media_sideload_image($url, $product_id, null, 'id');
+                if (is_wp_error($id)) return new WP_Error('a1fi_queue_image', sprintf(__('Could not import a product image: %s', 'allinonefeedimporter'), $id->get_error_message()));
+                $by_url[$url] = (int) $id;
+            }
+            $ids[] = $by_url[$url];
+        }
+        if ($ids === $existing_ids) return false;
+        $product->set_image_id($ids[0]);
+        $product->set_gallery_image_ids(array_slice($ids, 1));
+        return true;
     }
 
     private static function finish_job($job, $status, $message) {

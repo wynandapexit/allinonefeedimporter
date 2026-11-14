@@ -6,6 +6,12 @@ WordPress Cron depends on site traffic unless a server cron triggers `wp-cron.ph
 
 The import log, failure details, and recent jobs refresh every 10 seconds without reloading the feed form. The log viewer retains its feed filter and displays up to 250 recent entries.
 
+## Updating existing products
+
+Queued imports match existing products by SKU. For matches, only mapped regular price, sale price, stock quantity, and images are updated; name, descriptions, categories, and status are not changed. Unchanged products are counted as skipped. Products without a matching SKU are created using all mapped fields, so map SKU to avoid duplicates on later runs.
+
+Images are reused when an existing product image or attachment has the same WordPress `_source_url` metadata. Missing or untracked images are downloaded once; a changed file at the same URL is not detected. Up to 10 image URLs are processed per product.
+
 To clear a stalled job and its logs, use **Cancel and clear imports for this feed**. This cancels that feed's active jobs and deletes their rows and logs without removing imported products. A row already being processed may still finish. If a worker lock is present, the jobs are cancelled but not immediately deleted; after the worker stops or its lock expires, use **Clear completed jobs and logs**. Cancellation or cleanup errors are shown in the admin interface.
 
 ## XML feed column troubleshooting

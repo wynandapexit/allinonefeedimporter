@@ -134,11 +134,14 @@ class A1FI_Import_Logger {
         $jobs = A1FI_Queue::jobs_table();
         if ($feed_id) {
             $items = $wpdb->get_results($wpdb->prepare("SELECT id,feed_id,job_id,row_number,event,details,created_at FROM $logs WHERE feed_id=%d ORDER BY id DESC LIMIT %d", $feed_id, self::VIEW_LIMIT));
+            A1FI_Job_Admin::check_monitor_query();
             $error_jobs = $wpdb->get_results($wpdb->prepare("SELECT id AS job_id,feed_id,status,errors,started_at FROM $jobs WHERE feed_id=%d AND errors IS NOT NULL AND errors<>'' ORDER BY id DESC LIMIT 25", $feed_id));
         } else {
             $items = $wpdb->get_results($wpdb->prepare("SELECT id,feed_id,job_id,row_number,event,details,created_at FROM $logs ORDER BY id DESC LIMIT %d", self::VIEW_LIMIT));
+            A1FI_Job_Admin::check_monitor_query();
             $error_jobs = $wpdb->get_results("SELECT id AS job_id,feed_id,status,errors,started_at FROM $jobs WHERE errors IS NOT NULL AND errors<>'' ORDER BY id DESC LIMIT 25");
         }
+        A1FI_Job_Admin::check_monitor_query();
         $feeds = get_option(A1FI_Plugin::OPTION, []);
         ?>
         <section id="a1fi-import-logs" class="notice notice-info a1fi-import-log-panel" style="display:block;margin:12px 20px 12px 0;padding:12px 16px">

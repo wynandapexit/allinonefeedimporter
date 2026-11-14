@@ -24,6 +24,7 @@ class A1FI_Job_Error_Viewer {
                 self::JOB_LIMIT
             ));
         }
+        A1FI_Job_Admin::check_monitor_query();
         $feeds = get_option(A1FI_Plugin::OPTION, []);
         ?>
         <section id="a1fi-job-error-details" class="notice notice-error" style="display:block;margin:12px 20px 12px 0;padding:12px 16px">
@@ -51,6 +52,7 @@ class A1FI_Job_Error_Viewer {
                             "SELECT id,`row_number`,payload FROM $rows_table WHERE job_id=%d AND status='failed' ORDER BY `row_number` ASC LIMIT 500",
                             (int) $job->id
                         ));
+                        A1FI_Job_Admin::check_monitor_query();
                         $rows_by_number = [];
                         foreach ((array) $failed_rows as $failed_row) $rows_by_number[(int) $failed_row->row_number] = $failed_row;
                         $rendered = [];

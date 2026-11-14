@@ -1,6 +1,8 @@
 <?php
 if (!defined('ABSPATH')) { exit; }
 
+class A1FI_Monitor_Query_Error extends RuntimeException {}
+
 /** Admin controls for inspecting and maintaining queued imports. */
 class A1FI_Job_Admin {
     public static function boot() {
@@ -8,10 +10,47 @@ class A1FI_Job_Admin {
         add_action('wp_ajax_a1fi_process_queue_now', [__CLASS__, 'process_queue_now']);
         add_action('wp_ajax_a1fi_delete_queued_job', [__CLASS__, 'delete_queued_job']);
         add_action('wp_ajax_a1fi_job_status', [__CLASS__, 'job_status']);
+        add_action('wp_ajax_a1fi_refresh_monitor', [__CLASS__, 'refresh_monitor']);
     }
 
     private static function can_manage() {
         return current_user_can('manage_woocommerce');
+    }
+
+    public static function check_monitor_query() {
+        global $wpdb;
+        if (defined('DOING_AJAX') && DOING_AJAX && ($_POST['action'] ?? '') === 'a1fi_refresh_monitor' && $wpdb->last_error) {
+            throw new A1FI_Monitor_Query_Error(sprintf(__('Could not refresh importer monitoring: %s', 'allinonefeedimporter'), $wpdb->last_error));
+        }
+    }
+
+    public static function refresh_monitor() {
+        if (!self::can_manage()) wp_send_json_error(__('Unauthorized.', 'allinonefeedimporter'), 403);
+        check_ajax_referer('a1fi_refresh_monitor');
+
+        $_GET['page'] = 'a1fi';
+        $_GET['a1fi_log_feed'] = absint($_POST['feed_id'] ?? 0);
+        $_GET['a1fi_job'] = absint($_POST['job_id'] ?? 0);
+        global $wpdb;
+        $parts = [];
+        foreach ([
+            'logs' => [A1FI_Import_Logger::class, 'render_viewer'],
+            'errors' => [A1FI_Job_Error_Viewer::class, 'render'],
+            'jobs' => [__CLASS__, 'render_jobs_ui'],
+        ] as $key => $renderer) {
+            ob_start();
+            try {
+                call_user_func($renderer);
+            } catch (A1FI_Monitor_Query_Error $error) {
+                ob_end_clean();
+                wp_send_json_error($error->getMessage(), 500);
+            }
+            $parts[$key] = ob_get_clean();
+            if ($wpdb->last_error) {
+                wp_send_json_error(sprintf(__('Could not refresh importer monitoring: %s', 'allinonefeedimporter'), $wpdb->last_error), 500);
+            }
+        }
+        wp_send_json_success($parts);
     }
 
     public static function job_status() {
@@ -81,6 +120,7 @@ class A1FI_Job_Admin {
         global $wpdb;
         $jobs_table = A1FI_Queue::jobs_table();
         $jobs = $wpdb->get_results("SELECT id,feed_id,status,total_rows,processed_rows,created_count,updated_count,skipped_count,failed_count,started_at FROM $jobs_table ORDER BY id DESC LIMIT 25");
+        self::check_monitor_query();
         $feeds = get_option(A1FI_Plugin::OPTION, []);
         $nonce = wp_create_nonce('a1fi_queue_controls');
         $status_nonce = wp_create_nonce('a1fi_job_status');
@@ -90,6 +130,7 @@ class A1FI_Job_Admin {
             <section class="a1fi-jobs-panel" style="margin-top:24px">
                 <h2><?php esc_html_e('Import jobs', 'allinonefeedimporter'); ?></h2>
                 <p><?php esc_html_e('Recent import jobs and their status. The job progress page can run a batch from your browser if the server cron worker is not dispatching.', 'allinonefeedimporter'); ?></p>
+                <p id="a1fi-monitor-refresh-status" role="status"><?php esc_html_e('Logs and jobs refresh automatically every 10 seconds.', 'allinonefeedimporter'); ?></p>
                 <?php if ($active_job_id): ?>
                     <div class="notice notice-info" id="a1fi-live-progress" data-job-id="<?php echo $active_job_id; ?>" role="status" aria-live="polite">
                         <p class="a1fi-progress-text"><?php printf(esc_html__('Loading progress for job #%d…', 'allinonefeedimporter'), $active_job_id); ?></p>
@@ -130,7 +171,7 @@ class A1FI_Job_Admin {
         const emptyJobWarning=<?php echo wp_json_encode(__('Job completed without processing rows. Refresh the page to retry the import or check the feed mappings and server database error log.', 'allinonefeedimporter')); ?>;
         function counts(job){return countsTemplate.replace('%1$d',job.created).replace('%2$d',job.updated).replace('%3$d',job.skipped).replace('%4$d',job.failed);}
         async function refreshProgress(jobId){
-            const row=rows.find(item=>item.dataset.a1fiJobRow===jobId);
+            const row=Array.from(document.querySelectorAll('tr[data-a1fi-job-row]')).find(item=>item.dataset.a1fiJobRow===jobId);
             const selected=liveProgress&&liveProgress.dataset.jobId===jobId;
             try{
                 const job=await post('a1fi_job_status',jobId,statusNonce);
@@ -159,6 +200,51 @@ class A1FI_Job_Admin {
             setTimeout(()=>refreshProgress(jobId),2000);
         }
         jobIds.forEach(refreshProgress);
+        const monitorNonce=<?php echo wp_json_encode(wp_create_nonce('a1fi_refresh_monitor')); ?>;
+        const monitorOk=<?php echo wp_json_encode(__('Logs and jobs refresh automatically every 10 seconds.', 'allinonefeedimporter')); ?>;
+        const monitorError=<?php echo wp_json_encode(__('Could not refresh logs and jobs:', 'allinonefeedimporter')); ?>;
+        const monitorStatus=document.getElementById('a1fi-monitor-refresh-status');
+        function replacePanel(id,html){
+            const current=document.getElementById(id);
+            const fresh=new DOMParser().parseFromString(html,'text/html').getElementById(id);
+            if(!current||!fresh)throw new Error('<?php echo esc_js(__('Monitoring panel is missing.', 'allinonefeedimporter')); ?>');
+            if(current.contains(document.activeElement))return;
+            const selection=window.getSelection();
+            if(selection&&!selection.isCollapsed&&current.contains(selection.anchorNode))return;
+            const select=current.querySelector('select[name="a1fi_log_feed"]');
+            const nextSelect=fresh.querySelector('select[name="a1fi_log_feed"]');
+            if(select&&nextSelect)nextSelect.value=select.value;
+            const scroll=Array.from(current.querySelectorAll('div, pre')).map(node=>[node.scrollTop,node.scrollLeft]);
+            current.replaceWith(fresh);
+            fresh.querySelectorAll('div, pre').forEach((node,index)=>{if(scroll[index]){node.scrollTop=scroll[index][0];node.scrollLeft=scroll[index][1];}});
+        }
+        async function refreshMonitor(){
+            try{
+                const body=new FormData();
+                body.append('action','a1fi_refresh_monitor');
+                body.append('_ajax_nonce',monitorNonce);
+                const filter=new URLSearchParams(window.location.search).get('a1fi_log_feed')||'0';
+                body.append('feed_id',filter);
+                body.append('job_id',liveProgress?liveProgress.dataset.jobId:'0');
+                const response=await fetch(ajax,{method:'POST',body,credentials:'same-origin'});
+                const json=await response.json();
+                if(!json.success)throw new Error(json.data||'Request failed');
+                const parsed=new DOMParser().parseFromString(json.data.jobs,'text/html');
+                const jobTemplate=parsed.getElementById('a1fi-jobs-template');
+                const incoming=jobTemplate&&jobTemplate.content.querySelector('.a1fi-jobs-table-wrap');
+                const current=document.querySelector('.a1fi-jobs-table-wrap');
+                if(!incoming||!current)throw new Error('<?php echo esc_js(__('Job table is missing.', 'allinonefeedimporter')); ?>');
+                replacePanel('a1fi-import-logs',json.data.logs);
+                replacePanel('a1fi-job-error-details',json.data.errors);
+                if(!current.querySelector('button:disabled')&&!current.contains(document.activeElement)){
+                    current.replaceWith(incoming);
+                    document.dispatchEvent(new Event('a1fi-jobs-refreshed'));
+                }
+                monitorStatus.textContent=monitorOk;
+            }catch(error){monitorStatus.textContent=monitorError+' '+error.message;}
+            setTimeout(refreshMonitor,10000);
+        }
+        setTimeout(refreshMonitor,10000);
         })();
         </script>
         <?php

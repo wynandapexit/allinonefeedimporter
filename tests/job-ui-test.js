@@ -37,7 +37,7 @@ const context = {
     document, URL, FormData, console,
     window: { location: { origin: 'https://example.test' } },
     ajaxurl: '/wp-admin/admin-ajax.php',
-    setTimeout(callback) { timers.push(callback); },
+    setTimeout(callback, delay) { timers.push({ callback, delay }); },
     fetch: async (url, options) => {
         const action = options.body.get('action');
         requests.push(action);
@@ -53,8 +53,8 @@ const context = {
     assert(text.textContent.includes('10 / 20 (50%)'));
     job.status = 'completed';
     job.processed = 20;
-    const refresh = timers.pop();
-    refresh();
+    const refresh = timers.find(timer => timer.delay === 2000);
+    refresh.callback();
     await new Promise(resolve => setImmediate(resolve));
     assert.strictEqual(status.textContent, 'completed');
     assert.strictEqual(bar.value, 100);

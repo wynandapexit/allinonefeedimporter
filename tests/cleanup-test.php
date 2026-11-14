@@ -31,6 +31,7 @@ function add_action(...$args) {}
 function current_user_can($cap) { return true; }
 function check_admin_referer($action) {}
 function __($text, $domain = null) { return $text; }
+function get_transient($key) { return !empty($GLOBALS['locks'][$key]); }
 function sanitize_text_field($text) { return $text; }
 function get_current_user_id() { return 1; }
 function set_transient($key, $value, $expiration) { $GLOBALS['result'] = $value; }
@@ -58,4 +59,8 @@ $db = new FakeDb();
 $db->fail_at = 2;
 $result = run_cleanup($db);
 check(!$result['success'] && count($db->queries) === 2 && strpos($result['error'], 'logs') !== false, 'Cleanup did not stop and report the failing step');
+$db = new FakeDb();
+$GLOBALS['locks']['a1fi_queue_lock'] = true;
+$result = run_cleanup($db);
+check(!$result['success'] && !$db->queries && strpos($result['error'], 'worker') !== false, 'Cleanup ran while the worker was active');
 echo "Cleanup checks passed.\n";

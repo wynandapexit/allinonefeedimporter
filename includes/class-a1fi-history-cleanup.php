@@ -22,10 +22,16 @@ class A1FI_History_Cleanup {
         $logs = A1FI_Import_Logger::table();
         $image_table = $wpdb->prefix . 'a1fi_image_queue';
         $result = ['success' => true, 'counts' => []];
-        $found_image_table = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($image_table)));
-        if ($wpdb->last_error) {
+        $found_image_table = null;
+        if (get_transient('a1fi_queue_lock') || get_transient('a1fi_queue_repair_lock')) {
             $result['success'] = false;
-            $result['error'] = sanitize_text_field($wpdb->last_error);
+            $result['error'] = __('An import worker may still be active or its lock has not expired. Wait a few minutes and try again.', 'allinonefeedimporter');
+        } else {
+            $found_image_table = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($image_table)));
+            if ($wpdb->last_error) {
+                $result['success'] = false;
+                $result['error'] = sanitize_text_field($wpdb->last_error);
+            }
         }
 
         // Delete details before parent jobs. Active jobs and their diagnostic entries are retained.
@@ -87,7 +93,7 @@ class A1FI_History_Cleanup {
                     (int) ($result['counts']['image_tasks'] ?? 0)
                 );
             } else {
-                esc_html_e('Cleanup encountered a database error: ', 'allinonefeedimporter');
+                esc_html_e('Cleanup was not completed: ', 'allinonefeedimporter');
                 echo esc_html($result['error'] ?? __('unknown error', 'allinonefeedimporter'));
             }
             echo '</p></div>';

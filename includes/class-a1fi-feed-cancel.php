@@ -4,14 +4,14 @@ if (!defined('ABSPATH')) { exit; }
 /** Per-feed cancellation controls for active queued imports. */
 class A1FI_Feed_Cancel {
     public static function boot() {
-        add_action('wp_ajax_a1fi_cancel_feed_jobs', [__CLASS__, 'cancel_feed_jobs']);
+        add_action('wp_ajax_a1fi_cancel_and_clear_feed_jobs', [__CLASS__, 'cancel_feed_jobs']);
         add_action('admin_footer', [__CLASS__, 'render_cancel_controls'], 45);
         add_filter('query', [__CLASS__, 'protect_cancelled_jobs']);
     }
 
     public static function cancel_feed_jobs() {
         if (!current_user_can('manage_woocommerce')) wp_send_json_error(__('Unauthorized.', 'allinonefeedimporter'), 403);
-        check_ajax_referer('a1fi_feed_cancel');
+        check_ajax_referer('a1fi_cancel_and_clear_feed');
         $feed_id = absint($_POST['feed_id'] ?? 0);
         if (!$feed_id) wp_send_json_error(__('Invalid feed.', 'allinonefeedimporter'), 400);
         global $wpdb;
@@ -39,7 +39,30 @@ class A1FI_Feed_Cancel {
         if ($rows_cancelled === false) {
             wp_send_json_error(sprintf(__('Jobs were cancelled, but pending rows could not be marked cancelled: %s. Refresh the page before clearing history.', 'allinonefeedimporter'), $wpdb->last_error ?: __('unknown database error', 'allinonefeedimporter')), 500);
         }
-        wp_send_json_success(['cancelled' => (int) $cancelled, 'message' => __('Import jobs cancelled. A row already being processed may still finish. Refresh the page, then clear completed jobs and logs.', 'allinonefeedimporter')]);
+        if (get_transient('a1fi_queue_lock') || get_transient('a1fi_queue_repair_lock')) {
+            wp_send_json_success([
+                'cancelled' => (int) $cancelled,
+                'cleared' => false,
+                'message' => __('Jobs were cancelled, but an import worker may still be active or its lock has not expired. Wait a few minutes, then use Clear completed jobs and logs. A row already being processed may finish.', 'allinonefeedimporter'),
+            ]);
+        }
+
+        $logs_table = A1FI_Import_Logger::table();
+        $deletions = [
+            [__('job rows', 'allinonefeedimporter'), "DELETE r FROM $rows_table r INNER JOIN $jobs_table j ON j.id=r.job_id WHERE j.id IN ($id_list) AND j.status='cancelled'"],
+            [__('logs', 'allinonefeedimporter'), "DELETE l FROM $logs_table l INNER JOIN $jobs_table j ON j.id=l.job_id WHERE j.id IN ($id_list) AND j.status='cancelled'"],
+            [__('jobs', 'allinonefeedimporter'), "DELETE FROM $jobs_table WHERE id IN ($id_list) AND status='cancelled'"],
+        ];
+        foreach ($deletions as [$label, $sql]) {
+            $deleted = $wpdb->query($sql);
+            if ($deleted === false) {
+                wp_send_json_error(sprintf(__('Jobs were cancelled, but clearing %1$s failed: %2$s. Use Clear completed jobs and logs to retry.', 'allinonefeedimporter'), $label, $wpdb->last_error ?: __('unknown database error', 'allinonefeedimporter')), 500);
+            }
+        }
+        if ((int) $deleted !== (int) $cancelled) {
+            wp_send_json_error(__('Some jobs changed while being cleared. Refresh the page and use Clear completed jobs and logs to remove any remaining history.', 'allinonefeedimporter'), 409);
+        }
+        wp_send_json_success(['cancelled' => (int) $cancelled, 'cleared' => true, 'message' => __('Cancelled jobs and their rows and logs were cleared. Products already imported were not removed.', 'allinonefeedimporter')]);
     }
 
     /** Prevent a worker finishing a batch from overwriting a concurrent cancellation. */
@@ -58,21 +81,21 @@ class A1FI_Feed_Cancel {
         $active = $wpdb->get_results("SELECT feed_id, COUNT(*) AS active_count FROM $jobs_table WHERE status IN ('queued','running') GROUP BY feed_id ORDER BY feed_id");
         if (!$active) return;
         $feeds = get_option(A1FI_Plugin::OPTION, []);
-        $nonce = wp_create_nonce('a1fi_feed_cancel');
+        $nonce = wp_create_nonce('a1fi_cancel_and_clear_feed');
         ?>
         <template id="a1fi-feed-cancel-template">
             <section class="a1fi-feed-cancel-panel notice notice-info" style="margin:16px 0;padding:12px 16px">
                 <h2><?php esc_html_e('Active imports by feed', 'allinonefeedimporter'); ?></h2>
-                <p><?php esc_html_e('Cancel stops pending rows for that feed. A row already being processed may finish before the worker stops.', 'allinonefeedimporter'); ?></p>
+                <p><?php esc_html_e('Cancel and clear removes active jobs for this feed and their rows and logs. Products already imported are not removed. A row already being processed may finish before the worker stops.', 'allinonefeedimporter'); ?></p>
                 <table class="widefat striped"><thead><tr><th><?php esc_html_e('Feed', 'allinonefeedimporter'); ?></th><th><?php esc_html_e('Active jobs', 'allinonefeedimporter'); ?></th><th><?php esc_html_e('Action', 'allinonefeedimporter'); ?></th></tr></thead><tbody>
                 <?php foreach ($active as $item): $feed_id = (int)$item->feed_id; $label = $feeds[$feed_id]['name'] ?? sprintf(__('Feed #%d', 'allinonefeedimporter'), $feed_id); ?>
-                    <tr data-a1fi-cancel-feed-row="<?php echo $feed_id; ?>"><td><?php echo esc_html($label); ?></td><td><?php echo (int)$item->active_count; ?></td><td><button type="button" class="button button-link-delete a1fi-cancel-feed" data-feed-id="<?php echo $feed_id; ?>"><?php esc_html_e('Cancel import for this feed', 'allinonefeedimporter'); ?></button></td></tr>
+                    <tr data-a1fi-cancel-feed-row="<?php echo $feed_id; ?>"><td><?php echo esc_html($label); ?></td><td><?php echo (int)$item->active_count; ?></td><td><button type="button" class="button button-link-delete a1fi-cancel-feed" data-feed-id="<?php echo $feed_id; ?>"><?php esc_html_e('Cancel and clear imports for this feed', 'allinonefeedimporter'); ?></button></td></tr>
                 <?php endforeach; ?>
                 </tbody></table>
             </section>
         </template>
         <script>
-        (function(){const template=document.getElementById('a1fi-feed-cancel-template');const panel=template&&template.content.firstElementChild;if(panel){const heading=document.querySelector('.wrap h1');if(heading)heading.insertAdjacentElement('afterend',panel);else{const wrap=document.querySelector('.wrap');if(wrap)wrap.prepend(panel);}}const endpoint=typeof ajaxurl==='string'&&ajaxurl?ajaxurl:new URL('/wp-admin/admin-ajax.php',window.location.origin).href;const nonce=<?php echo wp_json_encode($nonce); ?>;document.addEventListener('click',async function(event){const button=event.target.closest('.a1fi-cancel-feed');if(!button)return;if(!window.confirm('<?php echo esc_js(__('Cancel all queued/running imports for this feed? Rows already in progress may finish.','allinonefeedimporter')); ?>'))return;button.disabled=true;const label=button.textContent;button.textContent='<?php echo esc_js(__('Cancelling…','allinonefeedimporter')); ?>';try{const body=new FormData();body.append('action','a1fi_cancel_feed_jobs');body.append('feed_id',button.dataset.feedId);body.append('_ajax_nonce',nonce);const response=await fetch(endpoint,{method:'POST',body,credentials:'same-origin'});const json=await response.json();if(!json.success)throw new Error(json.data||'Cancel failed');alert(json.data.message);window.location.reload();}catch(error){alert(error.message);button.disabled=false;button.textContent=label;}});})();
+        (function(){const template=document.getElementById('a1fi-feed-cancel-template');const panel=template&&template.content.firstElementChild;if(panel){const heading=document.querySelector('.wrap h1');if(heading)heading.insertAdjacentElement('afterend',panel);else{const wrap=document.querySelector('.wrap');if(wrap)wrap.prepend(panel);}}const endpoint=typeof ajaxurl==='string'&&ajaxurl?ajaxurl:new URL('/wp-admin/admin-ajax.php',window.location.origin).href;const nonce=<?php echo wp_json_encode($nonce); ?>;document.addEventListener('click',async function(event){const button=event.target.closest('.a1fi-cancel-feed');if(!button)return;if(!window.confirm('<?php echo esc_js(__('Cancel all queued/running imports for this feed and permanently delete their job rows and logs? Products already imported will remain. A row in progress may finish.','allinonefeedimporter')); ?>'))return;button.disabled=true;const label=button.textContent;button.textContent='<?php echo esc_js(__('Cancelling and clearing…','allinonefeedimporter')); ?>';try{const body=new FormData();body.append('action','a1fi_cancel_and_clear_feed_jobs');body.append('feed_id',button.dataset.feedId);body.append('_ajax_nonce',nonce);const response=await fetch(endpoint,{method:'POST',body,credentials:'same-origin'});const json=await response.json();if(!json.success)throw new Error(json.data||'Cancel failed');alert(json.data.message);window.location.reload();}catch(error){alert(error.message);button.disabled=false;button.textContent=label;}});})();
         </script>
         <?php
     }

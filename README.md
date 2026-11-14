@@ -4,7 +4,7 @@ Enable both the feed and its schedule, and select at least one day and a time in
 
 WordPress Cron depends on site traffic unless a server cron triggers `wp-cron.php`; use a server cron for reliable operation. Scheduled jobs appear in **Import jobs**, where their progress can be monitored.
 
-To clear a stalled job, use **Cancel import for this feed** first. Cancellation stops the worker before its next row; a row already being processed may still finish. After the worker stops, use **Clear completed jobs and logs**. Cancellation or cleanup errors are shown in the admin interface.
+To clear a stalled job and its logs, use **Cancel and clear imports for this feed**. This cancels that feed's active jobs and deletes their rows and logs without removing imported products. A row already being processed may still finish. If a worker lock is present, the jobs are cancelled but not immediately deleted; after the worker stops or its lock expires, use **Clear completed jobs and logs**. Cancellation or cleanup errors are shown in the admin interface.
 
 ## XML feed column troubleshooting
 

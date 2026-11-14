@@ -18,17 +18,28 @@ class A1FI_Feed_Cancel {
         $jobs_table = A1FI_Queue::jobs_table();
         $rows_table = A1FI_Queue::rows_table();
         $active_ids = $wpdb->get_col($wpdb->prepare("SELECT id FROM $jobs_table WHERE feed_id=%d AND status IN ('queued','running')", $feed_id));
-        if (!$active_ids) wp_send_json_success(['cancelled'=>0, 'message'=>__('No active import jobs for this feed.', 'allinonefeedimporter')]);
+        if ($wpdb->last_error) {
+            wp_send_json_error(sprintf(__('Could not find active import jobs: %s', 'allinonefeedimporter'), $wpdb->last_error), 500);
+        }
+        if (!$active_ids) wp_send_json_error(__('No active import jobs were found. Refresh the page to see their current status.', 'allinonefeedimporter'), 409);
         $ids = array_map('absint', $active_ids);
         $id_list = implode(',', $ids);
         $now = current_time('mysql');
-        $wpdb->query("UPDATE $jobs_table SET status='cancelled', finished_at=" . $wpdb->prepare('%s', $now) . ", message='Cancelled by administrator' WHERE feed_id=" . absint($feed_id) . " AND status IN ('queued','running')");
-        // Rows already loaded into a worker batch may finish; remaining rows will not run.
-        $wpdb->query("UPDATE $rows_table SET status='cancelled' WHERE job_id IN ($id_list) AND status='queued'");
-        wp_clear_scheduled_hook('a1fi_process_queue');
-        // Restore the recurring worker so other and future imports continue to run.
-        A1FI_Queue::ensure_cron();
-        wp_send_json_success(['cancelled'=>count($ids), 'message'=>__('Active import jobs cancelled. Any row already being processed may finish.', 'allinonefeedimporter')]);
+        $cancelled = $wpdb->query($wpdb->prepare(
+            "UPDATE $jobs_table SET status='cancelled', finished_at=%s, message=%s WHERE feed_id=%d AND id IN ($id_list) AND status IN ('queued','running')",
+            $now, __('Cancelled by administrator', 'allinonefeedimporter'), $feed_id
+        ));
+        if ($cancelled === false) {
+            wp_send_json_error(sprintf(__('Could not cancel import jobs: %s', 'allinonefeedimporter'), $wpdb->last_error ?: __('unknown database error', 'allinonefeedimporter')), 500);
+        }
+        if (!$cancelled) wp_send_json_error(__('No jobs were cancelled. Refresh the page to see their current status.', 'allinonefeedimporter'), 409);
+        $rows_cancelled = $wpdb->query(
+            "UPDATE $rows_table r INNER JOIN $jobs_table j ON j.id=r.job_id SET r.status='cancelled' WHERE j.id IN ($id_list) AND j.status='cancelled' AND r.status='queued'"
+        );
+        if ($rows_cancelled === false) {
+            wp_send_json_error(sprintf(__('Jobs were cancelled, but pending rows could not be marked cancelled: %s. Refresh the page before clearing history.', 'allinonefeedimporter'), $wpdb->last_error ?: __('unknown database error', 'allinonefeedimporter')), 500);
+        }
+        wp_send_json_success(['cancelled' => (int) $cancelled, 'message' => __('Import jobs cancelled. A row already being processed may still finish. Refresh the page, then clear completed jobs and logs.', 'allinonefeedimporter')]);
     }
 
     /** Prevent a worker finishing a batch from overwriting a concurrent cancellation. */
@@ -61,7 +72,7 @@ class A1FI_Feed_Cancel {
             </section>
         </template>
         <script>
-        (function(){const template=document.getElementById('a1fi-feed-cancel-template');const panel=template&&template.content.firstElementChild;if(panel){const heading=document.querySelector('.wrap h1');if(heading)heading.insertAdjacentElement('afterend',panel);else{const wrap=document.querySelector('.wrap');if(wrap)wrap.prepend(panel);}}const endpoint=typeof ajaxurl==='string'&&ajaxurl?ajaxurl:new URL('/wp-admin/admin-ajax.php',window.location.origin).href;const nonce=<?php echo wp_json_encode($nonce); ?>;document.addEventListener('click',async function(event){const button=event.target.closest('.a1fi-cancel-feed');if(!button)return;if(!window.confirm('<?php echo esc_js(__('Cancel all queued/running imports for this feed? Rows already in progress may finish.','allinonefeedimporter')); ?>'))return;button.disabled=true;const label=button.textContent;button.textContent='<?php echo esc_js(__('Cancelling…','allinonefeedimporter')); ?>';try{const body=new FormData();body.append('action','a1fi_cancel_feed_jobs');body.append('feed_id',button.dataset.feedId);body.append('_ajax_nonce',nonce);const response=await fetch(endpoint,{method:'POST',body,credentials:'same-origin'});const json=await response.json();if(!json.success)throw new Error(json.data||'Cancel failed');const row=button.closest('tr');row.cells[1].textContent='0';button.textContent='<?php echo esc_js(__('Cancelled','allinonefeedimporter')); ?>';}catch(error){alert(error.message);button.disabled=false;button.textContent=label;}});})();
+        (function(){const template=document.getElementById('a1fi-feed-cancel-template');const panel=template&&template.content.firstElementChild;if(panel){const heading=document.querySelector('.wrap h1');if(heading)heading.insertAdjacentElement('afterend',panel);else{const wrap=document.querySelector('.wrap');if(wrap)wrap.prepend(panel);}}const endpoint=typeof ajaxurl==='string'&&ajaxurl?ajaxurl:new URL('/wp-admin/admin-ajax.php',window.location.origin).href;const nonce=<?php echo wp_json_encode($nonce); ?>;document.addEventListener('click',async function(event){const button=event.target.closest('.a1fi-cancel-feed');if(!button)return;if(!window.confirm('<?php echo esc_js(__('Cancel all queued/running imports for this feed? Rows already in progress may finish.','allinonefeedimporter')); ?>'))return;button.disabled=true;const label=button.textContent;button.textContent='<?php echo esc_js(__('Cancelling…','allinonefeedimporter')); ?>';try{const body=new FormData();body.append('action','a1fi_cancel_feed_jobs');body.append('feed_id',button.dataset.feedId);body.append('_ajax_nonce',nonce);const response=await fetch(endpoint,{method:'POST',body,credentials:'same-origin'});const json=await response.json();if(!json.success)throw new Error(json.data||'Cancel failed');alert(json.data.message);window.location.reload();}catch(error){alert(error.message);button.disabled=false;button.textContent=label;}});})();
         </script>
         <?php
     }

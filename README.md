@@ -4,6 +4,8 @@ Enable both the feed and its schedule, and select at least one day and a time in
 
 WordPress Cron depends on site traffic unless a server cron triggers `wp-cron.php`; use a server cron for reliable operation. Scheduled jobs appear in **Import jobs**, where their progress can be monitored.
 
+To clear a stalled job, use **Cancel import for this feed** first. Cancellation stops the worker before its next row; a row already being processed may still finish. After the worker stops, use **Clear completed jobs and logs**. Cancellation or cleanup errors are shown in the admin interface.
+
 ## XML feed column troubleshooting
 
 XML feeds often wrap products in one or more container nodes (including namespaced Atom/OData responses). The importer now looks for repeated product-like elements and descends through wrapper nodes instead of treating each root child as a separate product row. XML field names are flattened into paths such as `ProductDto.Name`, `ProductDto.Sku`, or `@id`.

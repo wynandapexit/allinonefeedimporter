@@ -233,6 +233,12 @@ class A1FI_Queue {
         $errors = $job->errors ? json_decode($job->errors, true) : [];
         if (!is_array($errors)) $errors = [];
         foreach ($batch as $queued_row) {
+            $status = $wpdb->get_var($wpdb->prepare("SELECT status FROM $jobs WHERE id=%d", (int) $job->id));
+            if ($wpdb->last_error) {
+                error_log('All In One Feed Importer: could not check job status: ' . $wpdb->last_error);
+                return;
+            }
+            if (!in_array($status, ['queued', 'running'], true)) return;
             $data = json_decode($queued_row->payload, true);
             if (!is_array($data)) {
                 $wpdb->update($rows_table, ['status' => 'failed'], ['id' => (int) $queued_row->id], ['%s'], ['%d']);

@@ -1,7 +1,7 @@
 <?php
 if (!defined('ABSPATH')) { exit; }
 
-/** Safely clear completed import history while preserving active jobs and pending image work. */
+/** Safely clear finished import history while preserving active jobs and pending image work. */
 class A1FI_History_Cleanup {
     const RESULT_PREFIX = 'a1fi_history_cleanup_';
 
@@ -20,27 +20,48 @@ class A1FI_History_Cleanup {
         $jobs = A1FI_Queue::jobs_table();
         $rows = A1FI_Queue::rows_table();
         $logs = A1FI_Import_Logger::table();
-        $image_table = A1FI_Queue_Image_Importer::table();
-        $active = "status IN ('queued','running')";
+        $image_table = $wpdb->prefix . 'a1fi_image_queue';
         $result = ['success' => true, 'counts' => []];
-
-        // Delete details before parent jobs. Active jobs and their diagnostic entries are retained.
-        $wpdb->query("DELETE r FROM $rows r INNER JOIN $jobs j ON j.id=r.job_id WHERE j.$active");
-        $result['counts']['rows'] = (int) $wpdb->rows_affected;
-
-        $wpdb->query("DELETE l FROM $logs l LEFT JOIN $jobs j ON j.id=l.job_id WHERE j.id IS NULL OR j.status NOT IN ('queued','running')");
-        $result['counts']['logs'] = (int) $wpdb->rows_affected;
-
-        $wpdb->query("DELETE FROM $jobs WHERE status NOT IN ('queued','running')");
-        $result['counts']['jobs'] = (int) $wpdb->rows_affected;
-
-        // Image tasks still queued or at the metadata stage are work in progress, not history.
-        $wpdb->query("DELETE FROM $image_table WHERE status IN ('completed','failed')");
-        $result['counts']['image_tasks'] = (int) $wpdb->rows_affected;
-
+        $found_image_table = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($image_table)));
         if ($wpdb->last_error) {
             $result['success'] = false;
             $result['error'] = sanitize_text_field($wpdb->last_error);
+        }
+
+        // Delete details before parent jobs. Active jobs and their diagnostic entries are retained.
+        $queries = [
+            'rows' => [
+                "DELETE r FROM $rows r LEFT JOIN $jobs j ON j.id=r.job_id WHERE j.id IS NULL OR j.status NOT IN ('queued','running')",
+                __('job rows', 'allinonefeedimporter'),
+            ],
+            'logs' => [
+                "DELETE l FROM $logs l LEFT JOIN $jobs j ON j.id=l.job_id WHERE j.id IS NULL OR j.status NOT IN ('queued','running')",
+                __('logs', 'allinonefeedimporter'),
+            ],
+            'jobs' => [
+                "DELETE FROM $jobs WHERE status NOT IN ('queued','running')",
+                __('finished jobs', 'allinonefeedimporter'),
+            ],
+        ];
+        if ($found_image_table === $image_table) {
+            $queries['image_tasks'] = [
+                "DELETE FROM $image_table WHERE status IN ('completed','failed')",
+                __('finished image tasks', 'allinonefeedimporter'),
+            ];
+        }
+        foreach ($queries as $key => [$sql, $label]) {
+            if (!$result['success']) break;
+            if ($wpdb->query($sql) === false) {
+                $result['success'] = false;
+                $result['error'] = sprintf(
+                    /* translators: 1: cleanup step, 2: database error */
+                    __('Could not clear %1$s: %2$s', 'allinonefeedimporter'),
+                    $label,
+                    sanitize_text_field($wpdb->last_error ?: __('unknown database error', 'allinonefeedimporter'))
+                );
+                break;
+            }
+            $result['counts'][$key] = (int) $wpdb->rows_affected;
         }
 
         set_transient(self::RESULT_PREFIX . get_current_user_id(), $result, 5 * MINUTE_IN_SECONDS);
@@ -59,7 +80,7 @@ class A1FI_History_Cleanup {
             echo '<div class="notice ' . esc_attr($class) . '"><p><strong>' . esc_html__('Importer history cleanup:', 'allinonefeedimporter') . '</strong> ';
             if (!empty($result['success'])) {
                 printf(
-                    esc_html__('Deleted %1$d completed jobs, %2$d job rows, %3$d logs, and %4$d finished image tasks. Active jobs and pending image work were kept.', 'allinonefeedimporter'),
+                    esc_html__('Deleted %1$d finished jobs, %2$d job rows, %3$d logs, and %4$d finished image tasks. Active jobs and pending image work were kept.', 'allinonefeedimporter'),
                     (int) ($result['counts']['jobs'] ?? 0),
                     (int) ($result['counts']['rows'] ?? 0),
                     (int) ($result['counts']['logs'] ?? 0),
@@ -73,7 +94,7 @@ class A1FI_History_Cleanup {
         }
         ?>
         <div class="notice notice-warning" style="padding:12px 16px">
-            <p><?php esc_html_e('Remove completed and failed job history, associated rows and logs, and finished image tasks. Queued or running jobs and pending image tasks are preserved.', 'allinonefeedimporter'); ?></p>
+            <p><?php esc_html_e('Remove finished job history, associated rows and logs, and finished image tasks. Queued or running jobs and pending image tasks are preserved.', 'allinonefeedimporter'); ?></p>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return window.confirm('<?php echo esc_js(__('Delete completed importer jobs and logs? This cannot be undone. Active jobs will be preserved.', 'allinonefeedimporter')); ?>');">
                 <input type="hidden" name="action" value="a1fi_clear_history">
                 <?php wp_nonce_field('a1fi_clear_history'); ?>

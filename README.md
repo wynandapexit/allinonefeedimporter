@@ -1,3 +1,9 @@
+## Scheduled imports
+
+Enable both the feed and its schedule, and select at least one day and a time in the WordPress site timezone. Scheduled imports are queued on the first WordPress Cron check at or after the selected time on that day. A failed enqueue is shown in the feed's last-run result and is not retried until the next scheduled day.
+
+WordPress Cron depends on site traffic unless a server cron triggers `wp-cron.php`; use a server cron for reliable operation. Scheduled jobs appear in **Import jobs**, where their progress can be monitored.
+
 ## XML feed column troubleshooting
 
 XML feeds often wrap products in one or more container nodes (including namespaced Atom/OData responses). The importer now looks for repeated product-like elements and descends through wrapper nodes instead of treating each root child as a separate product row. XML field names are flattened into paths such as `ProductDto.Name`, `ProductDto.Sku`, or `@id`.

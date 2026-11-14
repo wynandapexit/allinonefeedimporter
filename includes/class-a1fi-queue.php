@@ -75,19 +75,33 @@ class A1FI_Queue {
         $feed = $feeds[$id] ?? null;
         if (!$feed) self::run_redirect(__('Feed not found; save it and try again.', 'allinonefeedimporter'));
 
+        $queued = self::queue_feed($id, $feed);
+        if (is_wp_error($queued)) self::run_redirect($queued->get_error_message(), (int) $queued->get_error_data());
+        self::run_redirect(sprintf(__('Import job #%d was queued with %d product rows.', 'allinonefeedimporter'), $queued['job_id'], $queued['stored']), $queued['job_id']);
+    }
+
+    /** Enqueue a saved feed from the scheduler without relying on an admin request. */
+    public static function enqueue_scheduled_run($id) {
+        $feeds = get_option(A1FI_Plugin::OPTION, []);
+        $feed = $feeds[$id] ?? null;
+        if (!$feed) return new WP_Error('a1fi_queue_feed', __('Feed not found; save it and try again.', 'allinonefeedimporter'));
+        return self::queue_feed((int) $id, $feed);
+    }
+
+    private static function queue_feed($id, $feed) {
         $file = self::get_feed_file($feed);
-        if (is_wp_error($file)) self::run_redirect($file->get_error_message());
+        if (is_wp_error($file)) return $file;
         $previous_path = $_POST['item_path'] ?? null;
         $had_path = array_key_exists('item_path', $_POST);
         if (!empty($feed['item_path'])) $_POST['item_path'] = $feed['item_path'];
         $result = A1FI_Feed_Reader::read($file, $feed['file_type'] ?? 'csv', $feed['delimiter'] ?? ',');
         if ($had_path) $_POST['item_path'] = $previous_path; else unset($_POST['item_path']);
         if (!empty($file['temporary']) && is_file($file['path'])) @unlink($file['path']);
-        if (is_wp_error($result)) self::run_redirect($result->get_error_message());
+        if (is_wp_error($result)) return $result;
 
         $errors = A1FI_Feed_Reader::validate($feed['mapping'] ?? [], $result['headers']);
-        if ($errors) self::run_redirect(implode(' ', $errors));
-        if (empty($result['rows'])) self::run_redirect(__('The feed contains no product rows to import.', 'allinonefeedimporter'));
+        if ($errors) return new WP_Error('a1fi_queue_mapping', implode(' ', $errors));
+        if (empty($result['rows'])) return new WP_Error('a1fi_queue_empty', __('The feed contains no product rows to import.', 'allinonefeedimporter'));
 
         global $wpdb;
         $jobs = self::jobs_table();
@@ -105,33 +119,33 @@ class A1FI_Queue {
             'started_at' => $now,
             'created_at' => $now,
         ], ['%d','%s','%d','%d','%d','%d','%d','%d','%s','%s']) === false) {
-            self::run_redirect(sprintf(__('Could not create import job: %s', 'allinonefeedimporter'), $wpdb->last_error ?: __('database insert failed', 'allinonefeedimporter')));
+            return new WP_Error('a1fi_queue_job', sprintf(__('Could not create import job: %s', 'allinonefeedimporter'), $wpdb->last_error ?: __('database insert failed', 'allinonefeedimporter')));
         }
         $job_id = (int) $wpdb->insert_id;
         $batch = [];
         foreach ($result['rows'] as $index => $row) {
             $payload = wp_json_encode($row);
             if ($payload === false) {
-                self::fail_enqueue($job_id, $rows_table, __('A feed row could not be encoded as JSON.', 'allinonefeedimporter'));
+                return self::fail_enqueue($job_id, $rows_table, __('A feed row could not be encoded as JSON.', 'allinonefeedimporter'));
             }
             $batch[] = $wpdb->prepare('(%d,%d,%s,%s)', $job_id, $index + 1, $payload, 'queued');
             if (count($batch) >= self::BATCH_SIZE) {
                 if (!self::insert_rows($rows_table, $batch)) {
-                    self::fail_enqueue($job_id, $rows_table, sprintf(__('Could not save feed rows: %s', 'allinonefeedimporter'), $wpdb->last_error ?: __('database insert failed', 'allinonefeedimporter')));
+                    return self::fail_enqueue($job_id, $rows_table, sprintf(__('Could not save feed rows: %s', 'allinonefeedimporter'), $wpdb->last_error ?: __('database insert failed', 'allinonefeedimporter')));
                 }
                 $batch = [];
             }
         }
         if ($batch && !self::insert_rows($rows_table, $batch)) {
-            self::fail_enqueue($job_id, $rows_table, sprintf(__('Could not save feed rows: %s', 'allinonefeedimporter'), $wpdb->last_error ?: __('database insert failed', 'allinonefeedimporter')));
+            return self::fail_enqueue($job_id, $rows_table, sprintf(__('Could not save feed rows: %s', 'allinonefeedimporter'), $wpdb->last_error ?: __('database insert failed', 'allinonefeedimporter')));
         }
         $stored = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $rows_table WHERE job_id=%d", $job_id));
         if ($stored !== count($result['rows'])) {
-            self::fail_enqueue($job_id, $rows_table, sprintf(__('Queue saved %1$d of %2$d feed rows. Check the database error log and start a new import.', 'allinonefeedimporter'), $stored, count($result['rows'])));
+            return self::fail_enqueue($job_id, $rows_table, sprintf(__('Queue saved %1$d of %2$d feed rows. Check the database error log and start a new import.', 'allinonefeedimporter'), $stored, count($result['rows'])));
         }
 
         wp_schedule_single_event(time() + 5, 'a1fi_process_queue');
-        self::run_redirect(sprintf(__('Import job #%d was queued with %d product rows.', 'allinonefeedimporter'), $job_id, $stored), $job_id);
+        return ['job_id' => $job_id, 'stored' => $stored];
     }
 
     private static function get_feed_file($feed) {
@@ -167,7 +181,7 @@ class A1FI_Queue {
             'message' => $message,
             'errors' => wp_json_encode([$message]),
         ], ['id' => $job_id], ['%s','%s','%s','%s'], ['%d']);
-        self::run_redirect($message, $job_id);
+        return new WP_Error('a1fi_queue_rows', $message, $job_id);
     }
 
     private static function run_redirect($message, $job_id = 0) {
@@ -298,11 +312,11 @@ class A1FI_Queue {
 
     private static function finish_job($job, $status, $message) {
         global $wpdb;
-        $wpdb->update(self::jobs_table(), [
-            'status' => $status,
-            'finished_at' => current_time('mysql'),
-            'message' => $message,
-        ], ['id' => (int) $job->id, 'status' => ['queued','running']], ['%s','%s','%s'], ['%d','%s']);
+        $jobs = self::jobs_table();
+        $wpdb->query($wpdb->prepare(
+            "UPDATE $jobs SET status=%s, finished_at=%s, message=%s WHERE id=%d AND status IN ('queued','running')",
+            $status, current_time('mysql'), $message, (int) $job->id
+        ));
     }
 
     public static function jobs_table() {

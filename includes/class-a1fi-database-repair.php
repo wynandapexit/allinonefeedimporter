@@ -38,8 +38,7 @@ class A1FI_Database_Repair {
         try {
             A1FI_Queue::install();
             A1FI_Import_Logger::install();
-            A1FI_Queue_Image_Importer::install();
-            $tables = [A1FI_Queue::jobs_table(), A1FI_Queue::rows_table(), A1FI_Import_Logger::table(), A1FI_Queue_Image_Importer::table()];
+            $tables = [A1FI_Queue::jobs_table(), A1FI_Queue::rows_table(), A1FI_Import_Logger::table()];
             foreach ($tables as $table) {
                 $pattern = method_exists($wpdb, 'esc_like') ? $wpdb->esc_like($table) : addcslashes($table, '_%\\');
                 $found = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $pattern));
@@ -73,7 +72,7 @@ class A1FI_Database_Repair {
         }
         ?>
         <div class="notice notice-info" style="padding:12px 16px">
-            <p><?php esc_html_e('Check and create or update the importer queue, image, and log tables. Existing table data is preserved.', 'allinonefeedimporter'); ?></p>
+            <p><?php esc_html_e('Check and create or update the importer queue and log tables. Existing table data is preserved.', 'allinonefeedimporter'); ?></p>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <input type="hidden" name="action" value="a1fi_repair_tables">
                 <?php wp_nonce_field('a1fi_repair_tables'); ?>

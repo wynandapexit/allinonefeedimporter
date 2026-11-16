@@ -326,7 +326,7 @@ class A1FI_Queue {
                 if (!$product_id) return new WP_Error('a1fi_queue_save', __('WooCommerce could not save product.', 'allinonefeedimporter'));
             }
             $images_changed = false;
-            if (!empty($values['images'])) {
+            if (!empty($values['images']) && ($created || (!$product->get_image_id('edit') && !$product->get_gallery_image_ids('edit')))) {
                 $images_changed = self::sync_images($product, (int) $product_id, (string) $values['images']);
                 if (is_wp_error($images_changed)) return $images_changed;
                 $changed = $changed || $images_changed;

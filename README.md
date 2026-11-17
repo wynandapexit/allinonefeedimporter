@@ -10,6 +10,8 @@ The import log, failure details, and recent jobs refresh every 10 seconds withou
 
 Queued imports match existing products by SKU. For matches, mapped regular price, sale price, and stock quantity are updated when needed. Existing images, name, descriptions, categories, and status are not changed. Unchanged products are counted as skipped. Products without a matching SKU are created using all mapped fields, so map SKU to avoid duplicates on later runs.
 
+For simple products, a mapped sale price equal to or greater than the regular price is treated as no sale price, matching WooCommerce's save behavior. This prevents the same sale price being reapplied on every import.
+
 Images are imported for new products and for matching products with no featured or gallery image, with up to 10 image URLs processed per product. Previously attached images with matching source URL metadata are reused where possible. Products with an existing image are left alone even if the feed's image URLs change or the image lacks source metadata.
 
 To clear a stalled job and its logs, use **Cancel and clear imports for this feed**. This cancels that feed's active jobs and deletes their rows and logs without removing imported products. A row already being processed may still finish. If a worker lock is present, the jobs are cancelled but not immediately deleted; after the worker stops or its lock expires, use **Clear completed jobs and logs**. Cancellation or cleanup errors are shown in the admin interface.

@@ -297,8 +297,13 @@ class A1FI_Queue {
                 if (!isset($values[$field]) || !is_numeric($values[$field])) continue;
                 $getter = 'get_' . $field;
                 $current = $product->$getter('edit');
-                if ($created || $current === '' || (float) $current !== (float) $values[$field]) {
-                    $product->$method((string) $values[$field]);
+                $value = (string) $values[$field];
+                $regular = $field === 'sale_price' ? $product->get_regular_price('edit') : '';
+                if ($field === 'sale_price' && !$product->is_type(['variable', 'grouped']) && $regular !== '' && is_numeric($regular) && (float) $value >= (float) $regular) {
+                    $value = '';
+                }
+                if ($created || ($value === '' ? $current !== '' : ($current === '' || (float) $current !== (float) $value))) {
+                    $product->$method($value);
                     $changed = true;
                 }
             }

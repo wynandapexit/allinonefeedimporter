@@ -15,6 +15,8 @@ class WC_Product_Simple {
     public $image = 0;
     public $gallery = [];
     public $saves = 0;
+    public $type = 'simple';
+    public function is_type($types) { return in_array($this->type, (array) $types, true); }
     public function set_name($value) { $this->name = $value; }
     public function set_sku($value) {}
     public function set_status($value) {}
@@ -62,6 +64,11 @@ function import_row($row) {
     if (!$method) { $method = new ReflectionMethod(A1FI_Queue::class, 'import_product'); $method->setAccessible(true); }
     return $method->invoke(null, $row, array_combine(array_keys($row), array_keys($row)));
 }
+function import_with_mapping($row, $mapping) {
+    $method = new ReflectionMethod(A1FI_Queue::class, 'import_product');
+    $method->setAccessible(true);
+    return $method->invoke(null, $row, $mapping);
+}
 $product = new WC_Product_Simple();
 $product->id = 42;
 $product->name = 'Existing name';
@@ -98,6 +105,22 @@ check(import_row($row)['outcome'] === 'updated' && $product->sale_price === '7.0
 $product->manage_stock = false;
 unset($row['images']);
 check(import_row($row)['outcome'] === 'updated' && $product->manage_stock, 'Stock management was not enabled');
+$row['sale_price'] = '12.50';
+check(import_row($row)['outcome'] === 'updated' && $product->sale_price === '', 'Equal regular and sale prices did not clear the sale price');
+$saves = $product->saves;
+check(import_row($row)['outcome'] === 'skipped' && $product->saves === $saves, 'Equal sale price was repeatedly updated');
+$row['sale_price'] = '14';
+check(import_row($row)['outcome'] === 'skipped' && $product->saves === $saves, 'Above-regular sale price was repeatedly updated');
+$row['sale_price'] = '11';
+check(import_row($row)['outcome'] === 'updated' && $product->sale_price === '11', 'Valid sale price was not applied after an invalid one');
+$row['regular_price'] = '10';
+check(import_row($row)['outcome'] === 'updated' && $product->regular_price === '10' && $product->sale_price === '', 'Sale price was not cleared after the regular price fell');
+$product->type = 'variable';
+$row['sale_price'] = '10';
+check(import_row($row)['outcome'] === 'updated' && $product->sale_price === '10', 'Variable product sale price was incorrectly cleared');
+$product->type = 'simple';
+$row['sale_price'] = '7';
+check(import_row($row)['outcome'] === 'updated' && $product->sale_price === '7', 'Sale price was not restored');
 $product->image = 0;
 $product->gallery = [6];
 $row['images'] = 'https://example.test/other.jpg';
@@ -115,6 +138,20 @@ check(import_row($row)['outcome'] === 'skipped' && count($GLOBALS['downloads']) 
 $product->image = 0;
 $row['images'] = 'invalid';
 check(is_wp_error(import_row($row)), 'Invalid image URL for an image-free product was not reported');
+$same_price_product = new WC_Product_Simple();
+$same_price_product->id = 43;
+$same_price_product->regular_price = '100.00';
+$same_price_product->sale_price = '';
+$same_price_product->manage_stock = true;
+$same_price_product->quantity = 4;
+$same_price_product->image = 5;
+$GLOBALS['product'] = $same_price_product;
+$same_price_row = ['name' => 'Product', 'sku' => 'sku', 'rrp_incl' => '100', 'jhbstock' => '4'];
+$same_price_mapping = ['name' => 'name', 'sku' => 'sku', 'regular_price' => 'rrp_incl', 'sale_price' => 'rrp_incl', 'stock_quantity' => 'jhbstock'];
+check(import_with_mapping($same_price_row, $same_price_mapping)['outcome'] === 'skipped' && $same_price_product->saves === 0, 'Identical regular and sale price mappings caused an unchanged product update');
+$same_price_row['rrp_incl'] = '110';
+check(import_with_mapping($same_price_row, $same_price_mapping)['outcome'] === 'updated' && $same_price_product->regular_price === '110' && $same_price_product->sale_price === '', 'Changed shared price mapping was not applied correctly');
+check(import_with_mapping($same_price_row, $same_price_mapping)['outcome'] === 'skipped' && $same_price_product->saves === 1, 'Shared price mapping caused a repeated product update');
 $GLOBALS['product'] = new WC_Product_Simple();
 $new_row = ['name' => 'New product', 'sku' => 'new', 'regular_price' => '23', 'stock_quantity' => '3', 'images' => 'https://example.test/brand-new.jpg'];
 $result = import_row($new_row);

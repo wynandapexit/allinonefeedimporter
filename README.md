@@ -4,6 +4,8 @@ Enable both the feed and its schedule, and select at least one day and a time in
 
 WordPress Cron depends on site traffic unless a server cron triggers `wp-cron.php`; use a server cron for reliable operation. Scheduled jobs appear in **Import jobs**, where their progress can be monitored.
 
+The worker processes up to 100 rows per batch, stopping between rows after approximately 10 seconds. Image downloads and product saves can make individual rows take longer. If WP-Cron is not dispatching, open a job's **View progress** page to run batches from the browser; this fallback runs only while that page remains open.
+
 The import log, failure details, and recent jobs refresh every 10 seconds without reloading the feed form. The log viewer retains its feed filter and displays up to 250 recent entries.
 
 ## Updating existing products

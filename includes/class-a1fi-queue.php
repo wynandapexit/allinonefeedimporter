@@ -3,7 +3,9 @@ if (!defined('ABSPATH')) { exit; }
 
 /** Persistent, bounded-batch import queue and progress endpoint. */
 class A1FI_Queue {
-    const BATCH_SIZE = 10;
+    const BATCH_SIZE = 100;
+    const INSERT_BATCH_SIZE = 10;
+    const BATCH_SECONDS = 10;
     const LOCK_SECONDS = 240;
 
     public static function boot() {
@@ -129,7 +131,7 @@ class A1FI_Queue {
                 return self::fail_enqueue($job_id, $rows_table, __('A feed row could not be encoded as JSON.', 'allinonefeedimporter'));
             }
             $batch[] = $wpdb->prepare('(%d,%d,%s,%s)', $job_id, $index + 1, $payload, 'queued');
-            if (count($batch) >= self::BATCH_SIZE) {
+            if (count($batch) >= self::INSERT_BATCH_SIZE) {
                 if (!self::insert_rows($rows_table, $batch)) {
                     return self::fail_enqueue($job_id, $rows_table, sprintf(__('Could not save feed rows: %s', 'allinonefeedimporter'), $wpdb->last_error ?: __('database insert failed', 'allinonefeedimporter')));
                 }
@@ -232,13 +234,17 @@ class A1FI_Queue {
         }
         $errors = $job->errors ? json_decode($job->errors, true) : [];
         if (!is_array($errors)) $errors = [];
+        $deadline = microtime(true) + self::BATCH_SECONDS;
+        $processed = 0;
         foreach ($batch as $queued_row) {
+            if ($processed && microtime(true) >= $deadline) break;
             $status = $wpdb->get_var($wpdb->prepare("SELECT status FROM $jobs WHERE id=%d", (int) $job->id));
             if ($wpdb->last_error) {
                 error_log('All In One Feed Importer: could not check job status: ' . $wpdb->last_error);
                 return;
             }
             if (!in_array($status, ['queued', 'running'], true)) return;
+            $processed++;
             $data = json_decode($queued_row->payload, true);
             if (!is_array($data)) {
                 $wpdb->update($rows_table, ['status' => 'failed'], ['id' => (int) $queued_row->id], ['%s'], ['%d']);
